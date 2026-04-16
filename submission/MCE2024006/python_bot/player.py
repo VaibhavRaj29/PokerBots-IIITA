@@ -77,7 +77,58 @@ class Player(Bot):
         if opponent_bounty_hit:
             print("Opponent hit their bounty of " + opponent_bounty_rank + "!")
 
+    def monte_carlo_strength(self,my_cards, board_cards, iterations=80):
+        deck = [r+s for r in "23456789TJQKA" for s in "shdc"]
+        for c in my_cards + board_cards:
+            if c in deck:
+                deck.remove(c)
+
+        rank_order = "23456789TJQKA"
+
+        def card_rank(card):
+            return rank_order.index(card[0])
+
+        def evaluate(cards):
+            ranks = [card_rank(c) for c in cards]
+            counts = {}
+            for r in ranks:
+                counts[r] = counts.get(r, 0) + 1
+
+            values = sorted(counts.values(), reverse=True)
+
+            if 4 in values:
+                return 7
+            if 3 in values and 2 in values:
+                return 6
+            if 3 in values:
+                return 5
+            if values.count(2) >= 2:
+                return 4
+            if 2 in values:
+                return 3
+            return max(ranks)
+
+        wins = 0
+
+        for _ in range(iterations):
+            sample = random.sample(deck, 2 + (5 - len(board_cards)))
+            opp_cards = sample[:2]
+            future_board = board_cards + sample[2:]
+
+            my_score = evaluate(my_cards + future_board)
+            opp_score = evaluate(opp_cards + future_board)
+
+            if my_score > opp_score:
+                wins += 1
+
+        return wins / iterations
+
+
     def get_action(self, game_state, round_state, active):
+        
+        if not hasattr(self, "opp_aggression"):
+            self.opp_aggression = 0
+            self.opp_passive = 0
 
         legal_actions = round_state.legal_actions()
         street = round_state.street
@@ -92,79 +143,60 @@ class Player(Bot):
         continue_cost = opp_pip - my_pip
         pot = (STARTING_STACK - my_stack) + (STARTING_STACK - opp_stack)
 
-        rank_order = "23456789TJQKA"
+        if continue_cost > 6:
+            self.opp_aggression += 1
+        else:
+            self.opp_passive += 1
 
-        def card_rank(card):
-            return rank_order.index(card[0])
+        strength = self.monte_carlo_strength(my_cards, board_cards, 80)
 
-        r1 = card_rank(my_cards[0])
-        r2 = card_rank(my_cards[1])
-
-        strength = 0
-
-        if r1 == r2:
-            strength += 80
-
-        if max(r1, r2) >= 11:
-            strength += 30
-
-        if abs(r1 - r2) <= 2:
-            strength += 10
-
-        if street >= 3:
-            board_ranks = [card_rank(c) for c in board_cards]
-            all_ranks = [r1, r2] + board_ranks
-
-            counts = {}
-            for r in all_ranks:
-                counts[r] = counts.get(r, 0) + 1
-
-            pairs = sum(1 for v in counts.values() if v == 2)
-            trips = any(v == 3 for v in counts.values())
-
-            if trips:
-                strength += 70
-            elif pairs >= 2:
-                strength += 45
-            elif pairs == 1:
-                strength += 20
+        if self.opp_aggression > self.opp_passive:
+            strength -= 0.05
+        else:
+            strength += 0.05
 
         pot_odds = continue_cost / (pot + 1) if continue_cost > 0 else 0
 
-        bluff = random.random() < 0.07
+        bluff_chance = 0.05
+        if self.opp_passive > self.opp_aggression:
+            bluff_chance = 0.1
 
-        if strength >= 90 and RaiseAction in legal_actions:
-            min_raise, _ = round_state.raise_bounds()
-            return RaiseAction(min_raise)
+        bluff = random.random() < bluff_chance
 
-        if strength >= 65:
-            if RaiseAction in legal_actions and random.random() < 0.5:
-                min_raise, _ = round_state.raise_bounds()
+        if strength > 0.8 and RaiseAction in legal_actions:
+            min_raise, max_raise = round_state.raise_bounds()
+            return RaiseAction(max_raise)
+
+        if strength > 0.6:
+            if RaiseAction in legal_actions:
+                min_raise, max_raise = round_state.raise_bounds()
+                if random.random() < 0.5:
+                    return RaiseAction((min_raise + max_raise) // 2)
                 return RaiseAction(min_raise)
             return CallAction() if continue_cost > 0 else CheckAction()
 
-        if strength >= 45:
+        if strength > 0.4:
             if continue_cost == 0:
                 return CheckAction()
-            if pot_odds < 0.3:
+            if pot_odds < strength:
                 return CallAction()
             return FoldAction()
 
-        if strength >= 25:
+        if strength > 0.25:
             if continue_cost == 0:
                 return CheckAction()
-            if pot_odds < 0.18:
+            if pot_odds < 0.2:
                 return CallAction()
             return FoldAction()
 
-        if bluff and RaiseAction in legal_actions and pot < 60:
-            min_raise, _ = round_state.raise_bounds()
+        if bluff and RaiseAction in legal_actions and pot < 80:
+            min_raise, max_raise = round_state.raise_bounds()
             return RaiseAction(min_raise)
 
         if continue_cost == 0:
             return CheckAction()
 
-        if continue_cost < 3:
+        if continue_cost < 4:
             return CallAction()
 
         return FoldAction()
