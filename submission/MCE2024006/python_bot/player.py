@@ -247,7 +247,7 @@ class Player(Bot):
     
             bet_ratio = cost / max(pot, 1)
     
-            if bet_ratio < 0.4 and RaiseAction in legal:
+            if bet_ratio < 0.4 and eq > 0.55 and RaiseAction in legal::
                 min_r, max_r = round_state.raise_bounds()
                 return RaiseAction(min(max_r, int(pot * 1.2)))
     
