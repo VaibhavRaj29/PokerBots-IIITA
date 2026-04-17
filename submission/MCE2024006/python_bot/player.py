@@ -77,128 +77,161 @@ class Player(Bot):
         if opponent_bounty_hit:
             print("Opponent hit their bounty of " + opponent_bounty_rank + "!")
 
-    def monte_carlo_strength(self,my_cards, board_cards, iterations=80):
+     def monte_carlo_strength(self, my_cards, board_cards, street):
+        iterations = 40 + street * 20
+    
         deck = [r+s for r in "23456789TJQKA" for s in "shdc"]
         for c in my_cards + board_cards:
             if c in deck:
                 deck.remove(c)
-
+    
         rank_order = "23456789TJQKA"
-
+    
         def card_rank(card):
             return rank_order.index(card[0])
-
+    
         def evaluate(cards):
-            ranks = [card_rank(c) for c in cards]
+            ranks = sorted([card_rank(c) for c in cards])
+            suits = [c[1] for c in cards]
+    
             counts = {}
             for r in ranks:
                 counts[r] = counts.get(r, 0) + 1
-
+    
             values = sorted(counts.values(), reverse=True)
-
+    
+            flush = max(suits.count(s) for s in suits) >= 5
+    
+            straight = False
+            for i in range(len(ranks)-4):
+                if ranks[i+4] - ranks[i] == 4:
+                    straight = True
+    
+            if flush and straight:
+                return 8
             if 4 in values:
                 return 7
             if 3 in values and 2 in values:
                 return 6
-            if 3 in values:
+            if flush:
                 return 5
-            if values.count(2) >= 2:
+            if straight:
                 return 4
-            if 2 in values:
+            if 3 in values:
                 return 3
-            return max(ranks)
-
+            if values.count(2) >= 2:
+                return 2
+            if 2 in values:
+                return 1
+            return 0
+    
         wins = 0
-
+    
         for _ in range(iterations):
             sample = random.sample(deck, 2 + (5 - len(board_cards)))
             opp_cards = sample[:2]
             future_board = board_cards + sample[2:]
-
+    
             my_score = evaluate(my_cards + future_board)
             opp_score = evaluate(opp_cards + future_board)
-
+    
             if my_score > opp_score:
                 wins += 1
-
+    
         return wins / iterations
-
-
     def get_action(self, game_state, round_state, active):
-        
+
         if not hasattr(self, "opp_aggression"):
             self.opp_aggression = 0
             self.opp_passive = 0
-
+    
         legal_actions = round_state.legal_actions()
         street = round_state.street
         my_cards = round_state.hands[active]
         board_cards = round_state.deck[:street]
-
+    
         my_pip = round_state.pips[active]
         opp_pip = round_state.pips[1-active]
         my_stack = round_state.stacks[active]
         opp_stack = round_state.stacks[1-active]
-
+    
         continue_cost = opp_pip - my_pip
         pot = (STARTING_STACK - my_stack) + (STARTING_STACK - opp_stack)
-
+    
+        position_advantage = 1 if active == 1 else 0
+    
+        rank_order = "23456789TJQKA"
+        r1 = rank_order.index(my_cards[0][0])
+        r2 = rank_order.index(my_cards[1][0])
+    
+        preflop_strength = 0
+        if r1 == r2:
+            preflop_strength += 0.4
+        if max(r1, r2) >= 10:
+            preflop_strength += 0.3
+        if abs(r1 - r2) <= 2:
+            preflop_strength += 0.2
+    
+        if street < 3:
+            strength = preflop_strength
+        else:
+            strength = self.monte_carlo_strength(my_cards, board_cards, street)
+    
         if continue_cost > 6:
             self.opp_aggression += 1
         else:
             self.opp_passive += 1
-
-        strength = self.monte_carlo_strength(my_cards, board_cards, 80)
-
+    
         if self.opp_aggression > self.opp_passive:
             strength -= 0.05
         else:
             strength += 0.05
-
+    
+        if position_advantage:
+            strength += 0.05
+    
         pot_odds = continue_cost / (pot + 1) if continue_cost > 0 else 0
-
-        bluff_chance = 0.05
-        if self.opp_passive > self.opp_aggression:
-            bluff_chance = 0.1
-
+    
+        bluff_chance = 0.03
+        if self.opp_passive > self.opp_aggression and position_advantage:
+            bluff_chance = 0.08
+    
         bluff = random.random() < bluff_chance
-
+    
         if strength > 0.8 and RaiseAction in legal_actions:
             min_raise, max_raise = round_state.raise_bounds()
-            return RaiseAction(max_raise)
-
+            return RaiseAction(int(max_raise * strength))
+    
         if strength > 0.6:
             if RaiseAction in legal_actions:
                 min_raise, max_raise = round_state.raise_bounds()
-                if random.random() < 0.5:
-                    return RaiseAction((min_raise + max_raise) // 2)
-                return RaiseAction(min_raise)
+                return RaiseAction(int(min_raise + (max_raise - min_raise) * strength))
             return CallAction() if continue_cost > 0 else CheckAction()
-
+    
         if strength > 0.4:
             if continue_cost == 0:
                 return CheckAction()
-            if pot_odds < strength:
+            if pot_odds < strength and continue_cost < my_stack * 0.25:
                 return CallAction()
             return FoldAction()
-
+    
         if strength > 0.25:
             if continue_cost == 0:
                 return CheckAction()
-            if pot_odds < 0.2:
+            if pot_odds < 0.2 and continue_cost < my_stack * 0.15:
                 return CallAction()
             return FoldAction()
-
-        if bluff and RaiseAction in legal_actions and pot < 80:
-            min_raise, max_raise = round_state.raise_bounds()
+    
+        if bluff and RaiseAction in legal_actions and pot < 60:
+            min_raise, _ = round_state.raise_bounds()
             return RaiseAction(min_raise)
-
+    
         if continue_cost == 0:
             return CheckAction()
-
-        if continue_cost < 4:
+    
+        if continue_cost < 3:
             return CallAction()
-
+    
         return FoldAction()
 
     
