@@ -139,100 +139,145 @@ class Player(Bot):
                 wins += 1
     
         return wins / iterations
-    def get_action(self, game_state, round_state, active):
+     def get_action(self, game_state, round_state, active):
 
-        if not hasattr(self, "opp_aggression"):
-            self.opp_aggression = 0
-            self.opp_passive = 0
-    
-        legal_actions = round_state.legal_actions()
+        legal = round_state.legal_actions()
         street = round_state.street
-        my_cards = round_state.hands[active]
-        board_cards = round_state.deck[:street]
+        hole = round_state.hands[active]
+        board = round_state.deck[:street]
     
         my_pip = round_state.pips[active]
         opp_pip = round_state.pips[1-active]
         my_stack = round_state.stacks[active]
         opp_stack = round_state.stacks[1-active]
     
-        continue_cost = opp_pip - my_pip
-        pot = (STARTING_STACK - my_stack) + (STARTING_STACK - opp_stack)
-    
-        position_advantage = 1 if active == 1 else 0
+        cost = opp_pip - my_pip
+        pot = my_pip + opp_pip
     
         rank_order = "23456789TJQKA"
-        r1 = rank_order.index(my_cards[0][0])
-        r2 = rank_order.index(my_cards[1][0])
     
-        preflop_strength = 0
-        if r1 == r2:
-            preflop_strength += 0.4
-        if max(r1, r2) >= 10:
-            preflop_strength += 0.3
-        if abs(r1 - r2) <= 2:
-            preflop_strength += 0.2
+        def rank(c):
+            return rank_order.index(c[0])
     
-        if street < 3:
-            strength = preflop_strength
-        else:
-            strength = self.monte_carlo_strength(my_cards, board_cards, street)
+        def to_ints(cards):
+            return [(rank(c)*4 + "shdc".index(c[1])) for c in cards]
     
-        if continue_cost > 6:
-            self.opp_aggression += 1
-        else:
-            self.opp_passive += 1
+        def eval5(h):
+            rs = sorted([x >> 2 for x in h], reverse=True)
+            ss = [x & 3 for x in h]
+            fl = len(set(ss)) == 1
+            st = False
+            if len(set(rs)) == 5:
+                if rs[0] - rs[4] == 4:
+                    st = True
+                elif rs == [12,3,2,1,0]:
+                    st, rs = True, [3,2,1,0,-1]
+            cnt = sorted([(rs.count(r), r) for r in set(rs)], reverse=True)
+            g = [c[0] for c in cnt]
+            hi = [c[1] for c in cnt]
+            if fl and st: return (8, rs)
+            if g[0] == 4: return (7, hi)
+            if g[:2] == [3,2]: return (6, hi)
+            if fl: return (5, rs)
+            if st: return (4, rs)
+            if g[0] == 3: return (3, hi)
+            if g[:2] == [2,2]: return (2, hi)
+            if g[0] == 2: return (1, hi)
+            return (0, rs)
     
-        if self.opp_aggression > self.opp_passive:
-            strength -= 0.05
-        else:
-            strength += 0.05
+        def best7(cards):
+            from itertools import combinations
+            return max(eval5(list(c)) for c in combinations(cards, 5))
     
-        if position_advantage:
-            strength += 0.05
+        def mc_equity(hole, board, n):
+            used = set(hole + board)
+            deck = [i for i in range(52) if i not in used]
+            need = 5 - len(board)
+            wins = 0.0
+            for _ in range(n):
+                draw = random.sample(deck, need + 2)
+                full = board + draw[:need]
+                opp = draw[need:]
+                me = best7(hole + full)
+                op = best7(opp + full)
+                if me > op:
+                    wins += 1
+                elif me == op:
+                    wins += 0.5
+            return wins / n
     
-        pot_odds = continue_cost / (pot + 1) if continue_cost > 0 else 0
+        hole_i = to_ints(hole)
+        board_i = to_ints(board)
     
-        bluff_chance = 0.03
-        if self.opp_passive > self.opp_aggression and position_advantage:
-            bluff_chance = 0.08
+        sims = 60 if game_state.game_clock > 25 else 30
+        eq = mc_equity(hole_i, board_i, sims)
     
-        bluff = random.random() < bluff_chance
+        pot_odds = cost / max(pot + cost, 1)
     
-        if strength > 0.8 and RaiseAction in legal_actions:
-            min_raise, max_raise = round_state.raise_bounds()
-            return RaiseAction(int(max_raise * strength))
+        r1, r2 = rank(hole[0]), rank(hole[1])
     
-        if strength > 0.6:
-            if RaiseAction in legal_actions:
-                min_raise, max_raise = round_state.raise_bounds()
-                return RaiseAction(int(min_raise + (max_raise - min_raise) * strength))
-            return CallAction() if continue_cost > 0 else CheckAction()
+        if street == 0:
+            strength = 0
+            if r1 == r2:
+                strength += 80
+            if max(r1, r2) >= 11:
+                strength += 30
+            if abs(r1 - r2) <= 2:
+                strength += 10
     
-        if strength > 0.4:
-            if continue_cost == 0:
+            if cost > 0:
+                if strength >= 85 and RaiseAction in legal:
+                    min_r, max_r = round_state.raise_bounds()
+                    return RaiseAction(max_r)
+                if strength >= 60:
+                    return CallAction()
+                if strength >= 40 and cost < 10:
+                    return CallAction()
+                return FoldAction()
+            else:
+                if RaiseAction in legal:
+                    min_r, max_r = round_state.raise_bounds()
+                    if strength >= 60:
+                        return RaiseAction(min_r)
+                    if random.random() < 0.4:
+                        return RaiseAction(min_r)
                 return CheckAction()
-            if pot_odds < strength and continue_cost < my_stack * 0.25:
+    
+        if cost > 0:
+    
+            bet_ratio = cost / max(pot, 1)
+    
+            if bet_ratio < 0.4 and RaiseAction in legal:
+                min_r, max_r = round_state.raise_bounds()
+                return RaiseAction(min(max_r, int(pot * 1.2)))
+    
+            if eq > 0.75 and RaiseAction in legal:
+                min_r, max_r = round_state.raise_bounds()
+                return RaiseAction(max_r)
+    
+            if eq > 0.55:
                 return CallAction()
+    
+            if eq > pot_odds + 0.05:
+                return CallAction()
+    
             return FoldAction()
     
-        if strength > 0.25:
-            if continue_cost == 0:
-                return CheckAction()
-            if pot_odds < 0.2 and continue_cost < my_stack * 0.15:
-                return CallAction()
-            return FoldAction()
+        else:
     
-        if bluff and RaiseAction in legal_actions and pot < 60:
-            min_raise, _ = round_state.raise_bounds()
-            return RaiseAction(min_raise)
+            if eq > 0.8 and RaiseAction in legal:
+                min_r, max_r = round_state.raise_bounds()
+                return RaiseAction(min_r)
     
-        if continue_cost == 0:
+            if eq > 0.6 and RaiseAction in legal:
+                min_r, max_r = round_state.raise_bounds()
+                return RaiseAction(min_r)
+    
+            if eq > 0.35 and random.random() < (0.35 + eq * 0.3) and RaiseAction in legal:
+                min_r, max_r = round_state.raise_bounds()
+                return RaiseAction(min_r)
+    
             return CheckAction()
-    
-        if continue_cost < 3:
-            return CallAction()
-    
-        return FoldAction()
 
     
 if __name__ == '__main__':
