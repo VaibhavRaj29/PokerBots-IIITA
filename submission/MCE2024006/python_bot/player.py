@@ -77,70 +77,8 @@ class Player(Bot):
         if opponent_bounty_hit:
             print("Opponent hit their bounty of " + opponent_bounty_rank + "!")
 
-     def monte_carlo_strength(self, my_cards, board_cards, street):
-        iterations = 40 + street * 20
+    def get_action(self, game_state, round_state, active):
     
-        deck = [r+s for r in "23456789TJQKA" for s in "shdc"]
-        for c in my_cards + board_cards:
-            if c in deck:
-                deck.remove(c)
-    
-        rank_order = "23456789TJQKA"
-    
-        def card_rank(card):
-            return rank_order.index(card[0])
-    
-        def evaluate(cards):
-            ranks = sorted([card_rank(c) for c in cards])
-            suits = [c[1] for c in cards]
-    
-            counts = {}
-            for r in ranks:
-                counts[r] = counts.get(r, 0) + 1
-    
-            values = sorted(counts.values(), reverse=True)
-    
-            flush = max(suits.count(s) for s in suits) >= 5
-    
-            straight = False
-            for i in range(len(ranks)-4):
-                if ranks[i+4] - ranks[i] == 4:
-                    straight = True
-    
-            if flush and straight:
-                return 8
-            if 4 in values:
-                return 7
-            if 3 in values and 2 in values:
-                return 6
-            if flush:
-                return 5
-            if straight:
-                return 4
-            if 3 in values:
-                return 3
-            if values.count(2) >= 2:
-                return 2
-            if 2 in values:
-                return 1
-            return 0
-    
-        wins = 0
-    
-        for _ in range(iterations):
-            sample = random.sample(deck, 2 + (5 - len(board_cards)))
-            opp_cards = sample[:2]
-            future_board = board_cards + sample[2:]
-    
-            my_score = evaluate(my_cards + future_board)
-            opp_score = evaluate(opp_cards + future_board)
-    
-            if my_score > opp_score:
-                wins += 1
-    
-        return wins / iterations
-     def get_action(self, game_state, round_state, active):
-
         legal = round_state.legal_actions()
         street = round_state.street
         hole = round_state.hands[active]
@@ -206,10 +144,26 @@ class Player(Bot):
                     wins += 0.5
             return wins / n
     
+        def smart_raise(eq, pot, min_r, max_r):
+            if eq > 0.85:
+                return max_r
+            elif eq > 0.7:
+                return min(max_r, int(pot * 1.2))
+            elif eq > 0.6:
+                return min(max_r, int(pot * 0.8))
+            else:
+                return min_r
+    
         hole_i = to_ints(hole)
         board_i = to_ints(board)
     
-        sims = 60 if game_state.game_clock > 25 else 30
+        if street == 3:
+            sims = 80 if game_state.game_clock > 25 else 40
+        elif street == 4:
+            sims = 60 if game_state.game_clock > 20 else 30
+        else:
+            sims = 40 if game_state.game_clock > 15 else 20
+    
         eq = mc_equity(hole_i, board_i, sims)
     
         pot_odds = cost / max(pot + cost, 1)
@@ -243,13 +197,24 @@ class Player(Bot):
                         return RaiseAction(min_r)
                 return CheckAction()
     
+        if street == 5:
+            if cost > 0:
+                if eq > 0.85 and RaiseAction in legal:
+                    min_r, max_r = round_state.raise_bounds()
+                    return RaiseAction(max_r)
+                if eq < 0.4:
+                    return FoldAction()
+    
         if cost > 0:
+    
+            if cost > pot * 0.6 and eq < 0.6:
+                return FoldAction()
     
             bet_ratio = cost / max(pot, 1)
     
-            if bet_ratio < 0.4 and eq > 0.55 and RaiseAction in legal::
+            if bet_ratio < 0.4 and eq > 0.55 and RaiseAction in legal:
                 min_r, max_r = round_state.raise_bounds()
-                return RaiseAction(min(max_r, int(pot * 1.2)))
+                return RaiseAction(smart_raise(eq, pot, min_r, max_r))
     
             if eq > 0.75 and RaiseAction in legal:
                 min_r, max_r = round_state.raise_bounds()
@@ -267,13 +232,13 @@ class Player(Bot):
     
             if eq > 0.8 and RaiseAction in legal:
                 min_r, max_r = round_state.raise_bounds()
-                return RaiseAction(min_r)
+                return RaiseAction(smart_raise(eq, pot, min_r, max_r))
     
             if eq > 0.6 and RaiseAction in legal:
                 min_r, max_r = round_state.raise_bounds()
-                return RaiseAction(min_r)
+                return RaiseAction(smart_raise(eq, pot, min_r, max_r))
     
-            if eq > 0.35 and random.random() < (0.35 + eq * 0.3) and RaiseAction in legal:
+            if 0.3 < eq < 0.55 and random.random() < 0.4 and RaiseAction in legal:
                 min_r, max_r = round_state.raise_bounds()
                 return RaiseAction(min_r)
     
